@@ -1,5 +1,11 @@
-import type { DataSystem, PrivacyRequest, WorkspaceState } from '@/types/domain'
+import type {
+  DataSystem,
+  PrivacyRequest,
+  Representative,
+  WorkspaceState,
+} from '@/types/domain'
 import { addDays, buildWorkflowSteps } from './workflow'
+import { digest, deterministicId, freezeSnapshot } from './chain'
 
 const systems: DataSystem[] = [
   {
@@ -64,6 +70,48 @@ const systems: DataSystem[] = [
   },
 ]
 
+// 示例代理关系：王宁的代理律师（承接 req-002 与已完成的 req-005）
+const lawyerWang: Representative = {
+  id: 'rep-lawyer-001',
+  kind: 'lawyer',
+  name: '许可（律所代理律师）',
+  contact: 'li***@lawfirm.example.com',
+  credentialRef: '沪律证字-2024-00876',
+  credentialDigest: digest('沪律证字-2024-00876', 'CRED'),
+  status: 'active',
+  scopeSystemIds: ['sys-crm', 'sys-marketing', 'sys-support'],
+  scopeRequestTypes: [],
+  grantedAt: '2026-09-18T06:00:00.000Z',
+  expiresAt: '2026-12-31T23:59:59.000Z',
+  revokedAt: null,
+  verification: {
+    status: 'verified',
+    note: '授权委托书、律所公函与律师执业证已核验，查看范围按授权书冻结。',
+    verifiedAt: '2026-09-18T06:10:00.000Z',
+  },
+  history: [],
+}
+
+// 本人关系：数据主体自行申请
+function selfRepresentative(name: string, contact: string): Representative {
+  return {
+    id: deterministicId('rep-self', contact),
+    kind: 'self',
+    name,
+    contact,
+    credentialRef: '',
+    credentialDigest: '',
+    status: 'active',
+    scopeSystemIds: systems.map((system) => system.id),
+    scopeRequestTypes: [],
+    grantedAt: '2026-09-01T00:00:00.000Z',
+    expiresAt: null,
+    revokedAt: null,
+    verification: { status: 'verified', note: '数据主体本人申请。' },
+    history: [],
+  }
+}
+
 function audit(
   id: string,
   action: string,
@@ -86,12 +134,26 @@ export function createInitialState(): WorkspaceState {
   const request4Due = addDays(new Date(request4At), 30).toISOString()
   const request5Due = addDays(new Date(request5At), 30).toISOString()
 
+  const selfZhang = selfRepresentative('张晨', 'zh***@example.com')
+  const selfLiu = selfRepresentative('刘晓', 'li***@example.com')
+  const selfChen = selfRepresentative('陈妙', 'ch***@example.com')
+
+  const snapshot1 = freezeSnapshot(selfZhang, request1At)
+  const snapshot2 = freezeSnapshot(lawyerWang, request2At)
+  const snapshot3 = freezeSnapshot(selfLiu, request3At)
+  const snapshot4 = freezeSnapshot(selfChen, request4At)
+  const snapshot5 = freezeSnapshot(lawyerWang, request5At)
+
   const requests: PrivacyRequest[] = [
     {
       id: 'req-001',
       code: 'DSR-2026-001',
+      dataSubjectName: '张晨',
+      dataSubjectContact: 'zh***@example.com',
       requesterName: '张晨',
       requesterContact: 'zh***@example.com',
+      representativeId: null,
+      intakeSnapshot: snapshot1,
       region: 'cn',
       type: 'access',
       status: 'processing',
@@ -126,8 +188,14 @@ export function createInitialState(): WorkspaceState {
           uploadedBy: '当前客服',
           uploadedAt: '2026-09-25T04:10:00.000Z',
           protected: true,
+          basisSnapshotId: snapshot1.id,
+          basisRepresentativeId: null,
+          basisRepresentativeName: '张晨',
+          basisSystemId: null,
+          basisState: 'current',
         },
       ],
+      deliveryPackages: [],
       conflicts: [],
       resultSummary: '',
       closureReason: '',
@@ -144,8 +212,12 @@ export function createInitialState(): WorkspaceState {
     {
       id: 'req-002',
       code: 'DSR-2026-002',
-      requesterName: '王宁',
-      requesterContact: 'wa***@example.com',
+      dataSubjectName: '王宁',
+      dataSubjectContact: 'wa***@example.com',
+      requesterName: '许可（律所代理律师）',
+      requesterContact: 'li***@lawfirm.example.com',
+      representativeId: 'rep-lawyer-001',
+      intakeSnapshot: snapshot2,
       region: 'eu',
       type: 'deletion',
       status: 'review-required',
@@ -159,7 +231,7 @@ export function createInitialState(): WorkspaceState {
       requestedAt: request2At,
       dueAt: request2Due,
       extendedDays: 0,
-      duplicateOf: 'req-005',
+      duplicateOf: 'DSR-2026-005',
       affectedSystemIds: ['sys-crm', 'sys-marketing', 'sys-support'],
       tasks: buildWorkflowSteps({
         requestId: 'req-002',
@@ -171,6 +243,7 @@ export function createInitialState(): WorkspaceState {
         systems,
       }),
       evidence: [],
+      deliveryPackages: [],
       conflicts: [
         '身份材料不足：授权书无法证明申请人与数据主体关系。',
         '疑似重复请求：与 DSR-2026-005 的请求人和处理类型相同。',
@@ -190,8 +263,12 @@ export function createInitialState(): WorkspaceState {
     {
       id: 'req-003',
       code: 'DSR-2026-003',
+      dataSubjectName: '刘晓',
+      dataSubjectContact: 'li***@example.com',
       requesterName: '刘晓',
       requesterContact: 'li***@example.com',
+      representativeId: null,
+      intakeSnapshot: snapshot3,
       region: 'us',
       type: 'rectification',
       status: 'review-required',
@@ -217,6 +294,7 @@ export function createInitialState(): WorkspaceState {
         systems,
       }).map((step, index) => (index === 1 ? { ...step, status: 'blocked', exceptionReason: '风控平台返回值与客服系统不一致。' } : step)),
       evidence: [],
+      deliveryPackages: [],
       conflicts: ['跨系统结果冲突：客户系统中的姓名已更正，但风控平台仍保留旧值。'],
       resultSummary: '',
       closureReason: '',
@@ -233,8 +311,12 @@ export function createInitialState(): WorkspaceState {
     {
       id: 'req-004',
       code: 'DSR-2026-004',
+      dataSubjectName: '陈妙',
+      dataSubjectContact: 'ch***@example.com',
       requesterName: '陈妙',
       requesterContact: 'ch***@example.com',
+      representativeId: null,
+      intakeSnapshot: snapshot4,
       region: 'sg',
       type: 'withdraw-consent',
       status: 'pending-close',
@@ -269,8 +351,14 @@ export function createInitialState(): WorkspaceState {
           uploadedBy: '增长技术组',
           uploadedAt: '2026-09-28T09:00:00.000Z',
           protected: true,
+          basisSnapshotId: snapshot4.id,
+          basisRepresentativeId: null,
+          basisRepresentativeName: '陈妙',
+          basisSystemId: 'sys-marketing',
+          basisState: 'current',
         },
       ],
+      deliveryPackages: [],
       conflicts: [],
       resultSummary: '营销平台已撤回同意并停止后续自动化触达。',
       closureReason: '',
@@ -287,8 +375,12 @@ export function createInitialState(): WorkspaceState {
     {
       id: 'req-005',
       code: 'DSR-2026-005',
-      requesterName: '王宁',
-      requesterContact: 'wa***@example.com',
+      dataSubjectName: '王宁',
+      dataSubjectContact: 'wa***@example.com',
+      requesterName: '许可（律所代理律师）',
+      requesterContact: 'li***@lawfirm.example.com',
+      representativeId: 'rep-lawyer-001',
+      intakeSnapshot: { ...snapshot5 },
       region: 'eu',
       type: 'deletion',
       status: 'completed',
@@ -323,6 +415,28 @@ export function createInitialState(): WorkspaceState {
           uploadedBy: '客户平台组',
           uploadedAt: '2026-09-08T05:00:00.000Z',
           protected: true,
+          basisSnapshotId: snapshot5.id,
+          basisRepresentativeId: 'rep-lawyer-001',
+          basisRepresentativeName: '许可（律所代理律师）',
+          basisSystemId: 'sys-crm',
+          basisState: 'current',
+        },
+      ],
+      deliveryPackages: [
+        {
+          id: 'pkg-005-1',
+          code: 'PKG-2026-005',
+          batchId: 'batch-005-close',
+          basisSnapshotId: snapshot5.id,
+          basisRepresentativeId: 'rep-lawyer-001',
+          basisRepresentativeName: '许可（律所代理律师）',
+          scopeSystemIds: ['sys-crm', 'sys-marketing'],
+          evidenceIds: ['evidence-005-a'],
+          digest: digest(`${snapshot5.id}-E5A0-1201`, 'PKG'),
+          preparedAt: '2026-09-10T01:30:00.000Z',
+          deliveredAt: '2026-09-10T02:00:00.000Z',
+          status: 'delivered',
+          reviewNote: '',
         },
       ],
       conflicts: [],
@@ -333,8 +447,56 @@ export function createInitialState(): WorkspaceState {
           'req-audit-005',
           '完成请求',
           '隐私负责人',
-          '处理结果合并完成并生成操作审计。',
+          '处理结果合并完成、生成处理包并交付。',
           '2026-09-10T02:00:00.000Z',
+        ),
+      ],
+    },
+    // 旧数据：缺少代理关系与受理快照，补全前禁止导出
+    {
+      id: 'req-006',
+      code: 'DSR-2026-006',
+      dataSubjectName: '赵远',
+      dataSubjectContact: 'zh***@example.com',
+      requesterName: '未知（历史导入）',
+      requesterContact: '',
+      representativeId: null,
+      intakeSnapshot: null,
+      region: 'cn',
+      type: 'access',
+      status: 'review-required',
+      identity: {
+        status: 'pending',
+        materialType: 'masked-id',
+        maskedReference: '110***********5566',
+        protectedDigest: 'ID-LEGACY-6',
+        note: '历史工单迁移，缺少代理关系登记，待回填确认。',
+      },
+      requestedAt: '2026-09-12T08:00:00.000Z',
+      dueAt: addDays(new Date('2026-09-12T08:00:00.000Z'), 30).toISOString(),
+      extendedDays: 0,
+      affectedSystemIds: ['sys-crm', 'sys-support'],
+      tasks: buildWorkflowSteps({
+        requestId: 'req-006',
+        type: 'access',
+        systemIds: ['sys-crm', 'sys-support'],
+        requestedAt: '2026-09-12T08:00:00.000Z',
+        dueAt: addDays(new Date('2026-09-12T08:00:00.000Z'), 30).toISOString(),
+        initialStatus: 'review-required',
+        systems,
+      }),
+      evidence: [],
+      deliveryPackages: [],
+      conflicts: ['旧数据缺少代理关系：需回填数据主体本人或代理人关系，补全前不能导出。'],
+      resultSummary: '',
+      closureReason: '',
+      audit: [
+        audit(
+          'req-audit-006',
+          '历史数据导入',
+          '系统迁移',
+          '工单迁移时未带入代理授权关系，标记为待确认。',
+          '2026-09-12T08:05:00.000Z',
         ),
       ],
     },
@@ -343,6 +505,8 @@ export function createInitialState(): WorkspaceState {
   return {
     requests,
     systems,
+    representatives: [lawyerWang, selfZhang, selfLiu, selfChen],
+    writeBatches: [],
     comments: [
       {
         id: 'comment-001',
@@ -373,7 +537,7 @@ export function createInitialState(): WorkspaceState {
         requestId: 'req-002',
         action: '身份材料复核',
         operator: '隐私运营',
-        detail: '身份材料不足并检测到疑似重复请求。',
+        detail: '代理律师提交的身份材料不足并检测到疑似重复请求。',
         createdAt: '2026-09-19T02:00:00.000Z',
       },
       {

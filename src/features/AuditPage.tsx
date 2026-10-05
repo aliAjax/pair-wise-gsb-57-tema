@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import {
+  Alert,
   Badge,
   Box,
   Button,
@@ -64,28 +65,47 @@ export function AuditPage() {
 
   if (isLoading || !data) return <Box className="panel">正在加载审计工作区...</Box>
   const workspace = data
+  const missingBasisRequests = workspace.requests.filter((request) => !request.intakeSnapshot)
+  const packagesUnderReview = workspace.requests.reduce(
+    (total, request) =>
+      total + request.deliveryPackages.filter((pkg) => pkg.status === 'under-review').length,
+    0,
+  )
 
   function sanitizedPackage() {
     return {
       exportedAt: new Date().toISOString(),
-      policy: '用户隐私权利请求履约操作规范 v1',
+      policy: '用户隐私权利请求履约操作规范 v2（代理授权处置链）',
       summary: {
         requestCount: workspace.requests.length,
         openCount: workspace.requests.filter(
           (request) => !['completed', 'rejected'].includes(request.status),
         ).length,
         systemCount: workspace.systems.length,
+        packagesUnderReview,
       },
       requests: workspace.requests.map((request) => ({
         code: request.code,
+        dataSubjectName: request.dataSubjectName,
+        dataSubjectContact: request.dataSubjectContact,
         requesterName: request.requesterName,
-        requesterContact: request.requesterContact,
         region: request.region,
         type: request.type,
         status: request.status,
         requestedAt: request.requestedAt,
         dueAt: request.dueAt,
         extendedDays: request.extendedDays,
+        intakeSnapshot: request.intakeSnapshot
+          ? {
+              id: request.intakeSnapshot.id,
+              representativeName: request.intakeSnapshot.representativeName,
+              kind: request.intakeSnapshot.kind,
+              scopeSystemIds: request.intakeSnapshot.scopeSystemIds,
+              statusAtIntake: request.intakeSnapshot.statusAtIntake,
+              frozenAt: request.intakeSnapshot.frozenAt,
+              invalidatedReason: request.intakeSnapshot.invalidatedReason,
+            }
+          : null,
         identity: {
           status: request.identity.status,
           materialType: request.identity.materialType,
@@ -107,7 +127,21 @@ export function AuditPage() {
           name: evidence.name,
           type: evidence.evidenceType,
           digest: evidence.digest,
+          basisSnapshotId: evidence.basisSnapshotId,
+          basisRepresentativeName: evidence.basisRepresentativeName,
+          basisState: evidence.basisState,
+          voidedAt: evidence.voidedAt ?? null,
           uploadedAt: evidence.uploadedAt,
+        })),
+        deliveryPackages: request.deliveryPackages.map((pkg) => ({
+          code: pkg.code,
+          basisSnapshotId: pkg.basisSnapshotId,
+          basisRepresentativeName: pkg.basisRepresentativeName,
+          digest: pkg.digest,
+          status: pkg.status,
+          preparedAt: pkg.preparedAt,
+          deliveredAt: pkg.deliveredAt,
+          reviewNote: pkg.reviewNote,
         })),
         conflicts: request.conflicts,
         resultSummary: request.resultSummary,
@@ -118,6 +152,17 @@ export function AuditPage() {
   }
 
   async function exportPackage() {
+    if (missingBasisRequests.length) {
+      toast({
+        title: '导出被阻断',
+        description: `以下旧数据缺少代理关系受理快照，补全前不能导出：${missingBasisRequests
+          .map((request) => request.code)
+          .join('、')}`,
+        status: 'error',
+        duration: 6000,
+      })
+      return
+    }
     const pkg = sanitizedPackage()
     await recordExport.mutateAsync({
       scope: '全量请求处理包',
@@ -171,6 +216,7 @@ export function AuditPage() {
               colorScheme="brand"
               leftIcon={<Download size={15} />}
               isLoading={recordExport.isPending}
+              isDisabled={missingBasisRequests.length > 0}
               onClick={exportPackage}
             >
               导出处理包
@@ -178,6 +224,19 @@ export function AuditPage() {
           </HStack>
         }
       />
+
+      {missingBasisRequests.length ? (
+        <Alert status="error" mb="4" borderRadius="5px">
+          存在 {missingBasisRequests.length} 个旧数据请求缺少代理关系受理快照（
+          {missingBasisRequests.map((request) => request.code).join('、')}
+          ）：处理包导出已阻断，请在请求详情中回填代理关系后再导出。
+        </Alert>
+      ) : null}
+      {packagesUnderReview ? (
+        <Alert status="warning" mb="4" borderRadius="5px">
+          {packagesUnderReview} 个已发出处理包因代理授权依据变更进入复核：处理包保留发出时依据与摘要，请在请求详情中登记复核意见。
+        </Alert>
+      ) : null}
 
       <div className="toolbar">
         <Input
@@ -236,10 +295,13 @@ export function AuditPage() {
       <Box className="panel">
         <Flex className="panel-title">
           <Heading size="sm">处理包隐私保护</Heading>
-          <Badge colorScheme="green">已校验</Badge>
+          <Badge colorScheme={missingBasisRequests.length ? 'red' : 'green'}>
+            {missingBasisRequests.length ? '导出已阻断' : '已校验'}
+          </Badge>
         </Flex>
         <Text color="gray.600" fontSize="sm">
-          导出内容仅包含掩码身份引用、摘要、任务状态、证据元数据和审计记录；系统不会导出原始身份材料。
+          导出内容仅包含掩码身份引用、摘要、任务状态、证据元数据、受理快照与处理包依据；系统不会导出原始身份材料。
+          旧数据缺少代理关系时先回填待确认，补全受理快照前一律拒绝导出；已发出处理包在授权变更后保留当时依据并进入复核。
         </Text>
       </Box>
     </Box>

@@ -38,23 +38,29 @@ import {
   useDisclosure,
   useToast,
 } from '@chakra-ui/react'
-import { ArrowLeft, FileCheck2, Link2Off, ShieldAlert } from 'lucide-react'
+import { ArrowLeft, FileCheck2, Link2Off, PackageCheck, RotateCw, ShieldAlert } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { StatusBadge, TypeBadge } from '@/components/StatusBadge'
 import {
   useAddCommentMutation,
   useAddConflictMutation,
-  useAddEvidenceMutation,
   useAssignTaskMutation,
+  useBackfillIntakeMutation,
   useCloseRequestMutation,
+  useDeliverPackageMutation,
+  useEvidenceBatchMutation,
   useExtendRequestMutation,
   useResolveConflictMutation,
+  useResumeBatchMutation,
+  useReviewPackageMutation,
   useSaveRequestMutation,
   useTaskActionMutation,
   useVerifyIdentityMutation,
   useWorkspaceQuery,
 } from '@/lib/hooks'
 import {
+  basisStateLabels,
+  packageStatusLabels,
   regionLabels,
   requestTypeLabels,
   type Region,
@@ -68,11 +74,14 @@ type DialogType =
   | 'identity'
   | 'assign'
   | 'evidence'
+  | 'batch'
   | 'block'
   | 'conflict'
   | 'resolve'
   | 'extend'
   | 'close'
+  | 'backfill'
+  | 'review-package'
   | null
 
 export function RequestDetailPage({ requestId }: { requestId: string }) {
@@ -86,9 +95,6 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
   const [content, setContent] = useState('')
   const [assignee, setAssignee] = useState('')
   const [identityStatus, setIdentityStatus] = useState<'verified' | 'insufficient'>('verified')
-  const [evidenceType, setEvidenceType] = useState<
-    'execution-log' | 'screenshot' | 'signed-record' | 'system-response'
-  >('execution-log')
   const [extendDays, setExtendDays] = useState(15)
   const [editForm, setEditForm] = useState({
     requesterName: '',
@@ -102,12 +108,19 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
   const verifyIdentity = useVerifyIdentityMutation()
   const assignTask = useAssignTaskMutation()
   const taskAction = useTaskActionMutation()
-  const addEvidence = useAddEvidenceMutation()
+  const evidenceBatch = useEvidenceBatchMutation()
+  const resumeBatch = useResumeBatchMutation()
+  const deliverPackage = useDeliverPackageMutation()
+  const reviewPackage = useReviewPackageMutation()
+  const backfillIntake = useBackfillIntakeMutation()
   const addConflict = useAddConflictMutation()
   const resolveConflict = useResolveConflictMutation()
   const extendRequest = useExtendRequestMutation()
   const closeRequest = useCloseRequestMutation()
   const addComment = useAddCommentMutation()
+  const [batchItems, setBatchItems] = useState<{ taskId: string; name: string }[]>([])
+  const [simulateCrash, setSimulateCrash] = useState(false)
+  const [selectedPackageId, setSelectedPackageId] = useState('')
 
   const comments = useMemo(
     () => data?.comments.filter((comment) => comment.requestId === requestId) ?? [],
@@ -121,6 +134,17 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
   const completedTasks = request.tasks.filter((task) => task.status === 'completed').length
   const currentTask = request.tasks.find((task) => task.status === 'active')
   const systems = data.systems.filter((system) => request.affectedSystemIds.includes(system.id))
+  const systemName = (systemId?: string | null) =>
+    data.systems.find((system) => system.id === systemId)?.name ?? systemId ?? '—'
+  const snapshot = request.intakeSnapshot
+  const snapshotRepresentative = snapshot?.representativeId
+    ? data.representatives.find((rep) => rep.id === snapshot.representativeId)
+    : undefined
+  const interruptedBatches = data.writeBatches.filter(
+    (batch) => batch.requestId === requestId && batch.status === 'in-progress',
+  )
+  const basisBlocked =
+    !snapshot || !!snapshot.invalidatedReason || request.status === 'recalculating'
 
   function openDialog(type: DialogType, task?: WorkflowStep, index = 0) {
     if (!request) return
@@ -129,6 +153,13 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
     setDialog(type)
     setContent('')
     if (type === 'assign') setAssignee(task?.assignee ?? '')
+    if (type === 'batch') {
+      setBatchItems(
+        task ? [{ taskId: task.id, name: '' }] : [{ taskId: '', name: '' }],
+      )
+      setSimulateCrash(false)
+    }
+    if (type === 'review-package') setSelectedPackageId(task?.id ?? '')
     if (type === 'edit') {
       setEditForm({
         requesterName: request.requesterName,
@@ -189,17 +220,50 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
           }),
         '任务已分派',
       )
-    } else if (dialog === 'evidence' && selectedTask) {
+    } else if (dialog === 'batch') {
+      const items = batchItems
+        .map((item) => ({
+          taskId: item.taskId,
+          name: item.name.trim(),
+          evidenceType: 'execution-log' as const,
+        }))
+        .filter((item) => item.taskId && item.name.length >= 2)
+      if (!items.length) {
+        toast({ title: '请至少填写一项证据（任务 + 名称）', status: 'warning' })
+        return
+      }
       await run(
         () =>
-          addEvidence.mutateAsync({
+          evidenceBatch.mutateAsync({
             requestId,
-            taskId: selectedTask.id,
-            name: content,
-            evidenceType,
+            items,
+            failAfterItem: simulateCrash ? 0 : undefined,
+            baseRevision: data!.revision,
             operator: '数据管理员',
           }),
-        '执行证据已受保护登记',
+        simulateCrash
+          ? '已模拟写入中断：批次账本保留，可从完整批次续做'
+          : `已按受理快照批量产出 ${items.length} 项证据`,
+      )
+    } else if (dialog === 'backfill') {
+      await run(
+        () =>
+          backfillIntake.mutateAsync({
+            requestId,
+            representativeId: content.trim() || 'self',
+            operator: '隐私负责人',
+          }),
+        '受理快照已补全，恢复证据产出与导出',
+      )
+    } else if (dialog === 'review-package') {
+      await run(
+        () =>
+          reviewPackage.mutateAsync({
+            packageId: selectedPackageId,
+            reviewNote: content,
+            operator: '隐私负责人',
+          }),
+        '复核意见已记录，处理包保留发出时依据',
       )
     } else if (dialog === 'block' && selectedTask) {
       await run(
@@ -266,6 +330,7 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
         taskId: task.id,
         action,
         note: action === 'start' ? '开始执行任务。' : '任务结果已提交。',
+        baseRevision: data!.revision,
         operator: task.assignee || '数据管理员',
       })
       toast({ title: action === 'start' ? '任务已开始' : '任务已完成', status: 'success' })
@@ -278,16 +343,50 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
     }
   }
 
+  async function resumeInterruptedBatch(batchId: string) {
+    try {
+      const next = await resumeBatch.mutateAsync({ batchId, operator: '数据管理员' })
+      const batch = next.writeBatches.find((item) => item.id === batchId)
+      toast({
+        title: batch?.status === 'completed' ? '批次已从完整批次续做完成' : '批次仍未完成',
+        description: `已产出 ${batch?.producedKeys.length ?? 0}/${batch?.plannedKeys.length ?? 0} 项，未重复生成证据。`,
+        status: batch?.status === 'completed' ? 'success' : 'warning',
+      })
+    } catch (error) {
+      toast({
+        title: '续做失败',
+        description: error instanceof Error ? error.message : '请重试',
+        status: 'error',
+      })
+    }
+  }
+
+  async function deliver(packageId: string) {
+    try {
+      await deliverPackage.mutateAsync({ packageId, operator: '隐私负责人' })
+      toast({ title: '处理包已发出，交付时依据已锁定', status: 'success' })
+    } catch (error) {
+      toast({
+        title: '交付失败',
+        description: error instanceof Error ? error.message : '请重试',
+        status: 'error',
+      })
+    }
+  }
+
   const dialogTitle: Record<Exclude<DialogType, null>, string> = {
     edit: '编辑请求基本信息',
     identity: '身份核验结论',
     assign: '分派履约任务',
     evidence: '登记执行证据',
+    batch: '按受理快照批量产出证据',
     block: '阻断任务并说明原因',
     conflict: '新增冲突或例外',
     resolve: '记录冲突复核结论',
     extend: '延期处理请求',
-    close: '关闭请求并合并结果',
+    close: '关闭请求并生成处理包',
+    backfill: '回填代理关系与受理快照',
+    'review-package': '已发出处理包依据复核',
   }
 
   return (
@@ -367,6 +466,56 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
           当前请求处于复核状态：{request.conflicts.join('；')}
         </Alert>
       ) : null}
+      {!snapshot ? (
+        <Alert status="warning" mb="4" borderRadius="5px">
+          <Flex w="100%" justify="space-between" align="center">
+            <Text>
+              旧数据缺少代理关系与受理快照：已标记待确认，补全前不能产出证据或导出处理包。
+            </Text>
+            <Button
+              size="sm"
+              colorScheme="orange"
+              onClick={() => openDialog('backfill')}
+              leftIcon={<RotateCw size={14} />}
+            >
+              回填代理关系
+            </Button>
+          </Flex>
+        </Alert>
+      ) : null}
+      {snapshot?.invalidatedReason ? (
+        <Alert status="error" mb="4" borderRadius="5px">
+          <Flex w="100%" justify="space-between" align="center">
+            <Text>
+              受理快照已失效（{snapshot.invalidatedReason}）：未交付材料已作废，请按最新代理关系重算任务后重新出包。
+            </Text>
+            <Badge colorScheme="red">依据失效重算中</Badge>
+          </Flex>
+        </Alert>
+      ) : null}
+      {interruptedBatches.length ? (
+        <Alert status="warning" mb="4" borderRadius="5px">
+          <VStack align="stretch" spacing="2" w="100%">
+            {interruptedBatches.map((batch) => (
+              <Flex key={batch.id} w="100%" justify="space-between" align="center">
+                <Text>
+                  写入批次 {batch.id.slice(0, 18)}… 中断：{batch.producedKeys.length}/
+                  {batch.plannedKeys.length} 项已落账，续做不会重复生成。
+                </Text>
+                <Button
+                  size="sm"
+                  colorScheme="orange"
+                  leftIcon={<RotateCw size={14} />}
+                  isLoading={resumeBatch.isPending}
+                  onClick={() => void resumeInterruptedBatch(batch.id)}
+                >
+                  从完整批次续做
+                </Button>
+              </Flex>
+            ))}
+          </VStack>
+        </Alert>
+      ) : null}
       {request.duplicateOf ? (
         <Alert status="warning" mb="4" borderRadius="5px">
           系统检测到与 {request.duplicateOf} 疑似重复，已保留原请求证据并要求人工复核。
@@ -387,17 +536,25 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
           <SimpleGrid columns={2} spacing="4">
             <Box>
               <Text color="gray.500" fontSize="xs">
-                请求人
+                数据主体
               </Text>
               <Text mt="1" fontWeight="600">
-                {request.requesterName}
+                {request.dataSubjectName}
               </Text>
             </Box>
             <Box>
               <Text color="gray.500" fontSize="xs">
-                联系方式
+                代为提交人
               </Text>
-              <Text mt="1">{request.requesterContact}</Text>
+              <Text mt="1">
+                {snapshot && snapshot.kind !== 'self' ? request.requesterName : '本人提交'}
+              </Text>
+            </Box>
+            <Box>
+              <Text color="gray.500" fontSize="xs">
+                主体联系方式
+              </Text>
+              <Text mt="1">{request.dataSubjectContact}</Text>
             </Box>
             <Box>
               <Text color="gray.500" fontSize="xs">
@@ -444,6 +601,51 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
               </Text>
             </Box>
           </HStack>
+          <Divider my="4" />
+          <HStack align="flex-start" spacing="3">
+            <PackageCheck size={19} color={snapshot?.invalidatedReason ? '#c74d4d' : '#237b78'} />
+            <Box w="100%">
+              <Flex justify="space-between">
+                <Text fontWeight="600">受理快照（代理关系与查看范围冻结）</Text>
+                {snapshot ? (
+                  <Badge colorScheme={snapshot.invalidatedReason ? 'red' : 'green'}>
+                    {snapshot.invalidatedReason ? '已失效' : '冻结有效'}
+                  </Badge>
+                ) : (
+                  <Badge colorScheme="yellow">待回填</Badge>
+                )}
+              </Flex>
+              {snapshot ? (
+                <>
+                  <Text mt="1" color="gray.600" fontSize="sm">
+                    {snapshot.kind === 'self' ? '数据主体本人' : `${snapshot.kind === 'lawyer' ? '代理律师' : '代理人'}：${snapshot.representativeName}`}
+                    {' · '}快照 <span className="mono">{snapshot.id.slice(0, 18)}</span>
+                  </Text>
+                  <Text mt="1" color="gray.600" fontSize="sm">
+                    查看范围：{snapshot.scopeSystemIds.map((id) => systemName(id)).join('、')}
+                    {snapshot.expiresAt
+                      ? ` · 授权至 ${new Date(snapshot.expiresAt).toLocaleDateString('zh-CN')}`
+                      : ''}
+                  </Text>
+                  <Text mt="1" color="gray.600" fontSize="sm">
+                    冻结于 {new Date(snapshot.frozenAt).toLocaleString('zh-CN')}
+                    {snapshotRepresentative
+                      ? ` · 授权核验：${snapshotRepresentative.verification.status === 'verified' ? '已通过' : '未通过'}`
+                      : ''}
+                  </Text>
+                  {snapshot.invalidatedReason ? (
+                    <Text mt="1" color="red.600" fontSize="sm">
+                      失效原因：{snapshot.invalidatedReason}
+                    </Text>
+                  ) : null}
+                </>
+              ) : (
+                <Text mt="1" color="orange.700" fontSize="sm">
+                  旧数据缺少代理关系，补全前任务证据与处理包导出一律阻断。
+                </Text>
+              )}
+            </Box>
+          </HStack>
         </Box>
 
         <Box className="panel">
@@ -474,8 +676,8 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
         <Box className="panel">
           <Flex className="panel-title">
             <Heading size="sm">当前动作</Heading>
-            <Badge colorScheme={request.identity.status === 'verified' ? 'green' : 'red'}>
-              {request.identity.status === 'verified' ? '可执行' : '身份阻断'}
+            <Badge colorScheme={request.identity.status === 'verified' && !basisBlocked ? 'green' : 'red'}>
+              {basisBlocked ? '授权依据阻断' : request.identity.status === 'verified' ? '可执行' : '身份阻断'}
             </Badge>
           </Flex>
           {currentTask ? (
@@ -484,10 +686,13 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
               <Text color="gray.600" fontSize="sm">
                 责任人：{currentTask.assignee}
               </Text>
+              {currentTask.exceptionReason ? (
+                <Text color="red.600" fontSize="sm">{currentTask.exceptionReason}</Text>
+              ) : null}
               <Button
                 size="sm"
                 colorScheme="brand"
-                isDisabled={request.identity.status !== 'verified'}
+                isDisabled={request.identity.status !== 'verified' || basisBlocked}
                 onClick={() => void taskMutation(currentTask, 'start')}
               >
                 开始任务
@@ -495,7 +700,7 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
               <Button
                 size="sm"
                 colorScheme="green"
-                isDisabled={request.identity.status !== 'verified'}
+                isDisabled={request.identity.status !== 'verified' || basisBlocked}
                 onClick={() => void taskMutation(currentTask, 'complete')}
               >
                 完成任务
@@ -504,18 +709,29 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
                 size="sm"
                 colorScheme="red"
                 variant="outline"
+                isDisabled={basisBlocked}
                 onClick={() => openDialog('block', currentTask)}
               >
                 阻断并复核
               </Button>
             </VStack>
           ) : (
-            <Alert status="success" borderRadius="5px">
-              当前没有活动任务，可检查冲突并关闭请求。
+            <Alert status={basisBlocked ? 'error' : 'success'} borderRadius="5px">
+              {basisBlocked
+                ? '授权依据失效或快照缺失，任务暂停，等待重算或回填。'
+                : '当前没有活动任务，可检查冲突并生成处理包。'}
             </Alert>
           )}
           <Divider my="4" />
           <VStack align="stretch" spacing="2">
+            <Button
+              size="sm"
+              colorScheme="teal"
+              isDisabled={basisBlocked}
+              onClick={() => openDialog('batch')}
+            >
+              批量产出证据（按快照）
+            </Button>
             <Button size="sm" onClick={() => openDialog('conflict')} leftIcon={<Link2Off size={15} />}>
               标记冲突或例外
             </Button>
@@ -577,7 +793,12 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
                       <Button size="xs" variant="ghost" onClick={() => openDialog('assign', task)}>
                         分派
                       </Button>
-                      <Button size="xs" variant="ghost" onClick={() => openDialog('evidence', task)}>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        isDisabled={basisBlocked}
+                        onClick={() => openDialog('batch', task)}
+                      >
                         证据
                       </Button>
                     </HStack>
@@ -622,14 +843,42 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
           </Heading>
           <VStack align="stretch" spacing="2">
             {request.evidence.map((evidence) => (
-              <Box key={evidence.id} className="timeline-item">
-                <Text fontWeight="600">{evidence.name}</Text>
+              <Box
+                key={evidence.id}
+                className="timeline-item"
+                opacity={evidence.voidedAt ? 0.55 : 1}
+                borderLeft={evidence.voidedAt ? '3px solid #c74d4d' : undefined}
+              >
+                <Flex justify="space-between">
+                  <Text fontWeight="600">
+                    {evidence.name}
+                    {evidence.voidedAt ? '（已失效）' : ''}
+                  </Text>
+                  <Badge
+                    colorScheme={
+                      evidence.basisState === 'current'
+                        ? 'green'
+                        : evidence.basisState === 'superseded'
+                          ? 'orange'
+                          : 'red'
+                    }
+                  >
+                    {basisStateLabels[evidence.basisState]}
+                  </Badge>
+                </Flex>
                 <Text mt="1" color="gray.600" fontSize="xs">
-                  {evidence.evidenceType} · {evidence.digest}
+                  {evidence.evidenceType} · {evidence.digest} · {systemName(evidence.basisSystemId)}
+                </Text>
+                <Text mt="1" color="gray.500" fontSize="xs">
+                  依据：{evidence.basisRepresentativeName || '本人'} ·{' '}
+                  <span className="mono">{evidence.basisSnapshotId?.slice(0, 16)}</span>
                 </Text>
                 <Text mt="1" color="gray.500" fontSize="xs">
                   {evidence.uploadedBy} · {new Date(evidence.uploadedAt).toLocaleString('zh-CN')}
                 </Text>
+                {evidence.voidReason ? (
+                  <Text mt="1" color="red.600" fontSize="xs">失效原因：{evidence.voidReason}</Text>
+                ) : null}
               </Box>
             ))}
             {!request.evidence.length ? (
@@ -640,6 +889,91 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
           </VStack>
         </Box>
       </div>
+
+      <Box className="panel" mb="4">
+        <Flex className="panel-title">
+          <Heading size="sm">处理包（锁定当时受理快照与证据）</Heading>
+          <Badge colorScheme="brand">{request.deliveryPackages.length} 个</Badge>
+        </Flex>
+        {request.deliveryPackages.length ? (
+          <VStack align="stretch" spacing="3">
+            {request.deliveryPackages.map((pkg) => (
+              <Box key={pkg.id} p="3" bg="gray.50" borderRadius="5px">
+                <Flex justify="space-between" align="center">
+                  <Box>
+                    <HStack>
+                      <Text fontWeight="700">{pkg.code}</Text>
+                      <Badge
+                        colorScheme={
+                          pkg.status === 'delivered'
+                            ? 'green'
+                            : pkg.status === 'under-review'
+                              ? 'orange'
+                              : pkg.status === 'voided'
+                                ? 'red'
+                                : 'blue'
+                        }
+                      >
+                        {packageStatusLabels[pkg.status]}
+                      </Badge>
+                    </HStack>
+                    <Text mt="1" color="gray.600" fontSize="xs">
+                      依据：{pkg.basisRepresentativeName || '数据主体本人'} · 快照{' '}
+                      <span className="mono">{pkg.basisSnapshotId.slice(0, 16)}</span> · 摘要{' '}
+                      <span className="mono">{pkg.digest}</span>
+                    </Text>
+                    <Text mt="1" color="gray.600" fontSize="xs">
+                      {pkg.evidenceIds.length} 项证据 · 范围：
+                      {pkg.scopeSystemIds.map((id) => systemName(id)).join('、')}
+                    </Text>
+                    {pkg.deliveredAt ? (
+                      <Text mt="1" color="gray.500" fontSize="xs">
+                        发出时间：{new Date(pkg.deliveredAt).toLocaleString('zh-CN')}
+                      </Text>
+                    ) : null}
+                    {pkg.reviewNote ? (
+                      <Text mt="1" color={pkg.status === 'voided' ? 'red.600' : 'orange.700'} fontSize="xs">
+                        {pkg.status === 'voided' ? '作废原因：' : '复核说明：'}
+                        {pkg.reviewNote}
+                      </Text>
+                    ) : null}
+                  </Box>
+                  <HStack>
+                    {pkg.status === 'prepared' ? (
+                      <Button
+                        size="xs"
+                        colorScheme="green"
+                        isLoading={deliverPackage.isPending}
+                        onClick={() => void deliver(pkg.id)}
+                      >
+                        交付给请求方
+                      </Button>
+                    ) : null}
+                    {pkg.status === 'under-review' ? (
+                      <Button
+                        size="xs"
+                        colorScheme="orange"
+                        onClick={() => {
+                          setSelectedPackageId(pkg.id)
+                          setContent('')
+                          setDialog('review-package')
+                          onOpen()
+                        }}
+                      >
+                        登记复核意见
+                      </Button>
+                    ) : null}
+                  </HStack>
+                </Flex>
+              </Box>
+            ))}
+          </VStack>
+        ) : (
+          <Alert status="info" borderRadius="5px">
+            关闭请求时按当前受理快照生成处理包；未交付包遇授权变更立即作废，已发出包保留依据并进入复核。
+          </Alert>
+        )}
+      </Box>
 
       <div className="two-column">
         <Box className="panel">
@@ -824,40 +1158,112 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
               </FormControl>
             ) : null}
 
-            {dialog === 'evidence' && selectedTask ? (
+            {dialog === 'batch' ? (
               <VStack align="stretch" spacing="4">
                 <Alert status="info" borderRadius="5px">
-                  证据只登记名称、类型、摘要和时间，不保存原附件内容。
+                  证据只按受理快照冻结的查看范围产出；整批先校验再写入，中断后从完整批次续做，重试不重复生成。
+                </Alert>
+                {batchItems.map((item, index) => (
+                  <Flex key={index} gap="3" align="center">
+                    <Select
+                      width="260px"
+                      value={item.taskId}
+                      onChange={(event) =>
+                        setBatchItems(
+                          batchItems.map((entry, entryIndex) =>
+                            entryIndex === index ? { ...entry, taskId: event.target.value } : entry,
+                          ),
+                        )
+                      }
+                    >
+                      <option value="">选择任务</option>
+                      {request.tasks
+                        .filter((task) => !task.id.endsWith('-identity') && !task.id.endsWith('-close'))
+                        .map((task) => (
+                          <option key={task.id} value={task.id}>
+                            {task.order}. {task.name}
+                          </option>
+                        ))}
+                    </Select>
+                    <Input
+                      flex="1"
+                      placeholder="证据名称，例如 删除执行回执"
+                      value={item.name}
+                      onChange={(event) =>
+                        setBatchItems(
+                          batchItems.map((entry, entryIndex) =>
+                            entryIndex === index ? { ...entry, name: event.target.value } : entry,
+                          ),
+                        )
+                      }
+                    />
+                    {batchItems.length > 1 ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        colorScheme="red"
+                        onClick={() =>
+                          setBatchItems(batchItems.filter((_, entryIndex) => entryIndex !== index))
+                        }
+                      >
+                        移除
+                      </Button>
+                    ) : null}
+                  </Flex>
+                ))}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    setBatchItems([...batchItems, { taskId: '', name: '' }])
+                  }
+                >
+                  增加一项证据
+                </Button>
+                <Checkbox isChecked={simulateCrash} onChange={(event) => setSimulateCrash(event.target.checked)}>
+                  模拟写入中断（第 1 项落账后中断，用于演示完整批次续做）
+                </Checkbox>
+              </VStack>
+            ) : null}
+
+            {dialog === 'backfill' ? (
+              <VStack align="stretch" spacing="4">
+                <Alert status="warning" borderRadius="5px">
+                  旧数据缺少代理关系。回填后会立即冻结受理快照；补全前不能产出证据或导出处理包。
                 </Alert>
                 <FormControl isRequired>
-                  <FormLabel>证据名称</FormLabel>
-                  <Input
+                  <FormLabel>代理关系（留空或输入 self 表示数据主体本人）</FormLabel>
+                  <Select
                     value={content}
                     onChange={(event) => setContent(event.target.value)}
-                    placeholder="例如 删除执行回执"
-                  />
-                </FormControl>
-                <FormControl>
-                  <FormLabel>证据类型</FormLabel>
-                  <Select
-                    value={evidenceType}
-                    onChange={(event) =>
-                      setEvidenceType(
-                        event.target.value as
-                          | 'execution-log'
-                          | 'screenshot'
-                          | 'signed-record'
-                          | 'system-response',
-                      )
-                    }
+                    placeholder="数据主体本人"
                   >
-                    <option value="execution-log">执行日志</option>
-                    <option value="screenshot">截图</option>
-                    <option value="signed-record">签署记录</option>
-                    <option value="system-response">系统回执</option>
+                    {data.representatives
+                      .filter(
+                        (rep) =>
+                          rep.kind !== 'self' &&
+                          rep.status === 'active' &&
+                          rep.verification.status === 'verified',
+                      )
+                      .map((rep) => (
+                        <option key={rep.id} value={rep.id}>
+                          {rep.kind === 'lawyer' ? '代理律师' : '代理人'} · {rep.name}
+                        </option>
+                      ))}
                   </Select>
                 </FormControl>
               </VStack>
+            ) : null}
+
+            {dialog === 'review-package' ? (
+              <FormControl isRequired>
+                <FormLabel>已发出处理包的复核意见</FormLabel>
+                <Textarea
+                  value={content}
+                  onChange={(event) => setContent(event.target.value)}
+                  placeholder="处理包保留发出时依据；说明是否需要通知接收方、作废重发或仅留痕"
+                />
+              </FormControl>
             ) : null}
 
             {['block', 'conflict', 'resolve', 'close'].includes(dialog ?? '') ? (

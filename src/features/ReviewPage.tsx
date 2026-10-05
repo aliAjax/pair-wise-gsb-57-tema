@@ -66,9 +66,12 @@ export function ReviewPage() {
       data?.requests.filter(
         (request) =>
           request.status === 'review-required' ||
+          request.status === 'recalculating' ||
           request.identity.status === 'insufficient' ||
+          !request.intakeSnapshot ||
           request.duplicateOf ||
           request.conflicts.length > 0 ||
+          request.deliveryPackages.some((pkg) => pkg.status === 'under-review') ||
           new Date(request.dueAt).getTime() < Date.now(),
       ) ?? [],
     [data],
@@ -141,7 +144,7 @@ export function ReviewPage() {
       />
 
       <Alert status="warning" mb="4" borderRadius="5px">
-        截止时间前关闭请求必须填写提前关闭理由，本页面只提供身份、冲突和延期复核动作。
+        截止时间前关闭必须填写理由；代理撤回/到期/换人后，未交付材料失效重算、已发出处理包保留依据复核，均在本队列处理。
       </Alert>
 
       <SimpleGrid columns={4} spacing="4" mb="5">
@@ -171,10 +174,15 @@ export function ReviewPage() {
         </Box>
         <Box className="metric info">
           <Text color="gray.600" fontSize="sm">
-            疑似重复
+            代理依据异常
           </Text>
           <Heading mt="2" size="md">
-            {queue.filter((request) => request.duplicateOf).length}
+            {queue.filter(
+              (request) =>
+                !request.intakeSnapshot ||
+                request.status === 'recalculating' ||
+                request.deliveryPackages.some((pkg) => pkg.status === 'under-review'),
+            ).length}
           </Heading>
         </Box>
       </SimpleGrid>
@@ -208,6 +216,28 @@ export function ReviewPage() {
                     </Td>
                     <Td maxW="360px">
                       <VStack align="stretch" spacing="1">
+                        {!request.intakeSnapshot ? (
+                          <Badge colorScheme="yellow" w="fit-content">
+                            旧数据缺少代理关系：待回填，补全前禁止导出
+                          </Badge>
+                        ) : null}
+                        {request.status === 'recalculating' ? (
+                          <Badge colorScheme="orange" w="fit-content">
+                            授权依据失效：未交付材料已作废，任务重算中
+                          </Badge>
+                        ) : null}
+                        {request.intakeSnapshot?.invalidatedReason ? (
+                          <Text fontSize="sm" color="red.600">
+                            快照失效：{request.intakeSnapshot.invalidatedReason}
+                          </Text>
+                        ) : null}
+                        {request.deliveryPackages
+                          .filter((pkg) => pkg.status === 'under-review')
+                          .map((pkg) => (
+                            <Badge key={pkg.id} colorScheme="orange" w="fit-content">
+                              已发出包 {pkg.code} 依据变更复核中
+                            </Badge>
+                          ))}
                         {request.duplicateOf ? (
                           <Badge colorScheme="orange">疑似重复 {request.duplicateOf}</Badge>
                         ) : null}

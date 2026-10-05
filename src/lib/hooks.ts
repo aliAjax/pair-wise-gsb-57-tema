@@ -135,4 +135,67 @@ export function useRecordExportMutation() {
   )
 }
 
+export function useRegisterRepresentativeMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.representation.register.mutate>[0], 'state'>, state) =>
+      trpc.representation.register.mutate({ ...input, state }),
+  )
+}
+
+export function useVerifyRepresentativeMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.representation.verify.mutate>[0], 'state'>, state) =>
+      trpc.representation.verify.mutate({ ...input, state }),
+  )
+}
+
+export function useChangeRepresentationMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.representation.change.mutate>[0], 'state'>, state) =>
+      trpc.representation.change.mutate({ ...input, state }),
+  )
+}
+
+export function useBackfillIntakeMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.representation.backfill.mutate>[0], 'state'>, state) =>
+      trpc.representation.backfill.mutate({ ...input, state }),
+  )
+}
+
+export function useEvidenceBatchMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.fulfillment.evidenceBatch.mutate>[0], 'state'>, state) =>
+      trpc.fulfillment.evidenceBatch.mutate({ ...input, state }),
+  )
+}
+
+export function useResumeBatchMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.fulfillment.resumeBatch.mutate>[0], 'state'>, state) =>
+      trpc.fulfillment.resumeBatch.mutate({ ...input, state }),
+  )
+}
+
+export function usePreparePackageMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.fulfillment.preparePackage.mutate>[0], 'state'>, state) =>
+      trpc.fulfillment.preparePackage.mutate({ ...input, state }),
+  )
+}
+
+export function useDeliverPackageMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.fulfillment.deliverPackage.mutate>[0], 'state'>, state) =>
+      trpc.fulfillment.deliverPackage.mutate({ ...input, state }),
+  )
+}
+
+export function useReviewPackageMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.fulfillment.reviewPackage.mutate>[0], 'state'>, state) =>
+      trpc.fulfillment.reviewPackage.mutate({ ...input, state }),
+  )
+}
+
 export type { PrivacyRequest }

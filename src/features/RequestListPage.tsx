@@ -50,6 +50,9 @@ import {
 import { deadlineState, templateName } from '@/services/workflow'
 
 const initialForm = {
+  dataSubjectName: '',
+  dataSubjectContact: '',
+  representativeId: '' as string,
   requesterName: '',
   requesterContact: '',
   region: 'cn' as Region,
@@ -75,11 +78,18 @@ export function RequestListPage() {
 
   if (isLoading || !data) return <Box className="panel">正在加载请求列表...</Box>
 
+  const activeRepresentatives = data.representatives.filter(
+    (rep) => rep.kind !== 'self' && rep.status === 'active' && rep.verification.status === 'verified',
+  )
+  const selectedRepresentative = activeRepresentatives.find(
+    (rep) => rep.id === form.representativeId,
+  )
+
   const filtered = data.requests.filter((request) => {
     const keyword = store.requestSearch.toLowerCase()
     return (
       (!keyword ||
-        `${request.code}${request.requesterName}${request.requesterContact}`
+        `${request.code}${request.dataSubjectName}${request.requesterName}${request.dataSubjectContact}`
           .toLowerCase()
           .includes(keyword)) &&
       (!store.requestType || request.type === store.requestType) &&
@@ -88,28 +98,58 @@ export function RequestListPage() {
   })
 
   async function submit() {
-    if (!form.requesterName.trim() || !form.requesterContact.trim()) {
-      toast({ title: '请填写请求人和联系方式', status: 'warning' })
+    if (!form.dataSubjectName.trim() || !form.dataSubjectContact.trim()) {
+      toast({ title: '请填写数据主体姓名和掩码联系方式', status: 'warning' })
       return
     }
     if (!form.affectedSystemIds.length) {
       toast({ title: '请至少选择一个相关系统', status: 'warning' })
       return
     }
+    if (form.representativeId) {
+      const rep = activeRepresentatives.find((item) => item.id === form.representativeId)
+      const outOfScope = form.affectedSystemIds.filter(
+        (systemId) => !rep?.scopeSystemIds.includes(systemId),
+      )
+      if (outOfScope.length) {
+        toast({
+          title: '查看范围超出授权',
+          description: `授权范围不包含所选系统，请调整系统或更换代理。`,
+          status: 'error',
+        })
+        return
+      }
+    }
     const next = await createRequest.mutateAsync({
-      input: form,
+      input: {
+        dataSubjectName: form.dataSubjectName,
+        dataSubjectContact: form.dataSubjectContact,
+        representativeId: form.representativeId || null,
+        requesterName:
+          form.requesterName.trim() ||
+          (selectedRepresentative ? selectedRepresentative.name : form.dataSubjectName),
+        requesterContact:
+          form.requesterContact.trim() ||
+          (selectedRepresentative ? selectedRepresentative.contact : form.dataSubjectContact),
+        region: form.region,
+        type: form.type,
+        affectedSystemIds: form.affectedSystemIds,
+        identityMaterialType: form.identityMaterialType,
+        identityReference: form.identityReference,
+        note: form.note,
+      },
       operator: '客服专员',
     })
     const created = next.requests.find(
       (request) =>
-        request.requesterName === form.requesterName &&
-        request.requesterContact === form.requesterContact,
+        request.dataSubjectName === form.dataSubjectName &&
+        request.dataSubjectContact === form.dataSubjectContact,
     )
     toast({
-      title: '请求已登记',
+      title: '请求已登记，受理快照已冻结',
       description: created?.duplicateOf
         ? `检测到与 ${created.duplicateOf} 疑似重复，已进入复核队列。`
-        : '已生成流程模板和身份核验任务。',
+        : '已按代理关系与查看范围冻结快照并生成流程。',
       status: created?.duplicateOf ? 'warning' : 'success',
     })
     setForm(initialForm)
@@ -172,7 +212,7 @@ export function RequestListPage() {
             <Thead>
               <Tr>
                 <Th>请求编号</Th>
-                <Th>请求人</Th>
+                <Th>数据主体 / 代理人</Th>
                 <Th>类型</Th>
                 <Th>地区</Th>
                 <Th>涉及系统</Th>
@@ -189,10 +229,20 @@ export function RequestListPage() {
                   <Tr key={request.id}>
                     <Td className="mono">{request.code}</Td>
                     <Td>
-                      <Text fontWeight="600">{request.requesterName}</Text>
+                      <Text fontWeight="600">{request.dataSubjectName}</Text>
                       <Text color="gray.500" fontSize="xs">
-                        {request.requesterContact}
+                        {request.dataSubjectContact}
                       </Text>
+                      {request.intakeSnapshot?.kind !== 'self' && request.intakeSnapshot ? (
+                        <Text color="brand.600" fontSize="xs">
+                          代理：{request.intakeSnapshot.representativeName}
+                        </Text>
+                      ) : (
+                        <Text color="gray.400" fontSize="xs">本人申请</Text>
+                      )}
+                      {!request.intakeSnapshot ? (
+                        <Badge colorScheme="yellow" mt="1">代理关系待回填</Badge>
+                      ) : null}
                     </Td>
                     <Td>
                       <TypeBadge type={request.type} />
@@ -207,6 +257,12 @@ export function RequestListPage() {
                     </Td>
                     <Td>
                       <HStack wrap="wrap" spacing="1">
+                        {!request.intakeSnapshot ? (
+                          <Badge colorScheme="yellow">缺代理快照</Badge>
+                        ) : null}
+                        {request.status === 'recalculating' ? (
+                          <Badge colorScheme="orange">依据失效重算</Badge>
+                        ) : null}
                         {request.duplicateOf ? <Badge colorScheme="orange">重复</Badge> : null}
                         {request.identity.status === 'insufficient' ? (
                           <Badge colorScheme="red">身份不足</Badge>
@@ -241,25 +297,69 @@ export function RequestListPage() {
           <ModalCloseButton />
           <ModalBody>
             <Alert status="info" mb="4" borderRadius="5px">
-              身份材料只保存掩码引用和摘要，不在工作区保存上传材料明文。
+              受理时立即冻结代理关系与查看范围快照；身份材料只保存掩码引用和摘要，不保存明文。
             </Alert>
             <Flex gap="4">
               <FormControl isRequired>
-                <FormLabel>请求人</FormLabel>
+                <FormLabel>数据主体姓名</FormLabel>
                 <Input
-                  value={form.requesterName}
-                  onChange={(event) => setForm({ ...form, requesterName: event.target.value })}
+                  value={form.dataSubjectName}
+                  onChange={(event) => setForm({ ...form, dataSubjectName: event.target.value })}
                 />
               </FormControl>
               <FormControl isRequired>
-                <FormLabel>联系方式</FormLabel>
+                <FormLabel>数据主体掩码联系方式</FormLabel>
                 <Input
-                  value={form.requesterContact}
-                  onChange={(event) => setForm({ ...form, requesterContact: event.target.value })}
-                  placeholder="仅填写掩码后的联系标识"
+                  value={form.dataSubjectContact}
+                  onChange={(event) => setForm({ ...form, dataSubjectContact: event.target.value })}
+                  placeholder="例如 zh***@example.com"
                 />
               </FormControl>
             </Flex>
+
+            <FormControl mt="4">
+              <FormLabel>代理关系（受理即冻结查看范围）</FormLabel>
+              <Select
+                value={form.representativeId}
+                onChange={(event) => setForm({ ...form, representativeId: event.target.value })}
+              >
+                <option value="">数据主体本人申请（查看范围与请求一致）</option>
+                {activeRepresentatives.map((rep) => (
+                  <option key={rep.id} value={rep.id}>
+                    {rep.kind === 'lawyer' ? '代理律师' : '代理人'} · {rep.name}（{rep.scopeSystemIds.length} 个系统）
+                  </option>
+                ))}
+              </Select>
+              {selectedRepresentative ? (
+                <Alert status="warning" mt="2" borderRadius="5px">
+                  仅限授权范围：{selectedRepresentative.scopeSystemIds.join('、')}
+                  {selectedRepresentative.expiresAt
+                    ? `；授权至 ${new Date(selectedRepresentative.expiresAt).toLocaleDateString('zh-CN')}`
+                    : ''}
+                </Alert>
+              ) : null}
+            </FormControl>
+
+            {selectedRepresentative ? (
+              <Flex gap="4" mt="4">
+                <FormControl>
+                  <FormLabel>代为提交人姓名</FormLabel>
+                  <Input
+                    value={form.requesterName}
+                    onChange={(event) => setForm({ ...form, requesterName: event.target.value })}
+                    placeholder={selectedRepresentative.name}
+                  />
+                </FormControl>
+                <FormControl>
+                  <FormLabel>代为提交人联系方式</FormLabel>
+                  <Input
+                    value={form.requesterContact}
+                    onChange={(event) => setForm({ ...form, requesterContact: event.target.value })}
+                    placeholder={selectedRepresentative.contact}
+                  />
+                </FormControl>
+              </Flex>
+            ) : null}
 
             <Flex gap="4" mt="4">
               <FormControl isRequired>

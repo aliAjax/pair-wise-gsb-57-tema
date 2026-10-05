@@ -19,7 +19,7 @@ import {
   Tr,
   VStack,
 } from '@chakra-ui/react'
-import { AlertTriangle, ArrowRight, Clock3, Database, ShieldCheck } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Clock3, Database, Scale, ShieldCheck } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { StatusBadge, TypeBadge } from '@/components/StatusBadge'
 import { useWorkspaceQuery } from '@/lib/hooks'
@@ -38,11 +38,21 @@ export function DashboardPage() {
   const reviewRequests = data.requests.filter(
     (request) =>
       request.status === 'review-required' ||
+      request.status === 'recalculating' ||
       request.identity.status === 'insufficient' ||
       request.conflicts.length > 0,
   )
   const overdueRequests = openRequests.filter(
     (request) => new Date(request.dueAt).getTime() < Date.now(),
+  )
+  const missingBasisRequests = data.requests.filter((request) => !request.intakeSnapshot)
+  const packagesUnderReview = data.requests.reduce(
+    (total, request) =>
+      total + request.deliveryPackages.filter((pkg) => pkg.status === 'under-review').length,
+    0,
+  )
+  const recalculatingRequests = data.requests.filter(
+    (request) => request.status === 'recalculating',
   )
   const completedTasks = data.requests.reduce(
     (total, request) => total + request.tasks.filter((task) => task.status === 'completed').length,
@@ -121,6 +131,28 @@ export function DashboardPage() {
         </Box>
       </Box>
 
+      {missingBasisRequests.length || packagesUnderReview || recalculatingRequests.length ? (
+        <Box className="panel" mb="4" p="4">
+          <HStack spacing="6">
+            {missingBasisRequests.length ? (
+              <Badge colorScheme="yellow" p="2">
+                {missingBasisRequests.length} 个旧数据待回填代理关系，导出已阻断
+              </Badge>
+            ) : null}
+            {recalculatingRequests.length ? (
+              <Badge colorScheme="orange" p="2">
+                {recalculatingRequests.length} 个请求授权依据失效，未交付材料重算中
+              </Badge>
+            ) : null}
+            {packagesUnderReview ? (
+              <Badge colorScheme="red" p="2">
+                {packagesUnderReview} 个已发出处理包保留依据并进入复核
+              </Badge>
+            ) : null}
+          </HStack>
+        </Box>
+      ) : null}
+
       <Box className="two-column">
         <Box className="panel">
           <Flex className="panel-title">
@@ -181,9 +213,18 @@ export function DashboardPage() {
             <Flex gap="12px" align="flex-start">
               <ShieldCheck size={20} color="#237b78" />
               <Box>
-                <Text fontWeight="600">身份材料最小化</Text>
+                <Text fontWeight="600">受理快照冻结</Text>
                 <Text mt="1" color="gray.600" fontSize="sm">
-                  工作区只保存掩码引用和摘要，不保存上传材料明文。
+                  受理时冻结代理关系与查看范围，任务证据只按该快照产出。
+                </Text>
+              </Box>
+            </Flex>
+            <Flex gap="12px" align="flex-start">
+              <Scale size={20} color="#8a55c7" />
+              <Box>
+                <Text fontWeight="600">代理变更处置链</Text>
+                <Text mt="1" color="gray.600" fontSize="sm">
+                  撤回/到期/换人后未交付材料立即失效重算，已发出处理包保留依据进入复核。
                 </Text>
               </Box>
             </Flex>

@@ -1,7 +1,7 @@
 import type { WorkspaceState } from '@/types/domain'
 import { workspaceStateSchema } from './schemas'
 
-const STORAGE_KEY = 'privacy-rights-workbench-v1'
+const STORAGE_KEY = 'privacy-rights-workbench-v2'
 
 export function loadWorkspace(): WorkspaceState | null {
   if (typeof window === 'undefined') return null

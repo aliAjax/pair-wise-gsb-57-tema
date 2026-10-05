@@ -11,6 +11,7 @@ const statusColor: Record<RequestStatus, string> = {
   'identity-review': 'purple',
   processing: 'blue',
   'review-required': 'red',
+  recalculating: 'orange',
   'pending-close': 'orange',
   completed: 'green',
   rejected: 'gray',

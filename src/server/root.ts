@@ -13,20 +13,42 @@ import {
   taskAction,
   verifyIdentity,
 } from '@/services/requestService'
+import {
+  backfillIntake,
+  changeRepresentation,
+  registerRepresentative,
+  verifyRepresentative,
+} from '@/services/representationService'
+import {
+  deliverPackage,
+  preparePackage,
+  produceEvidenceBatch,
+  resumeEvidenceBatch,
+  reviewPackage,
+} from '@/services/fulfillmentService'
 import { createInitialState } from '@/services/mockData'
 import {
   assignTaskInputSchema,
+  backfillIntakeInputSchema,
+  changeRepresentationInputSchema,
   closeRequestInputSchema,
   commentInputSchema,
   conflictInputSchema,
   createRequestInputSchema,
+  deliverPackageInputSchema,
+  evidenceBatchInputSchema,
   evidenceInputSchema,
   extendRequestInputSchema,
   identityInputSchema,
+  preparePackageInputSchema,
   recordExportInputSchema,
+  registerRepresentativeInputSchema,
   resolveConflictInputSchema,
+  resumeBatchInputSchema,
+  reviewPackageInputSchema,
   saveRequestInputSchema,
   taskActionInputSchema,
+  verifyRepresentativeInputSchema,
 } from '@/lib/schemas'
 import type { WorkspaceState } from '@/types/domain'
 
@@ -90,6 +112,7 @@ export const appRouter = t.router({
             input.action,
             input.note,
             input.operator,
+            input.baseRevision,
           ),
         ),
       ),
@@ -165,6 +188,102 @@ export const appRouter = t.router({
       .mutation(({ input }) =>
         execute(() =>
           recordExport(input.state, input.scope, input.count, input.operator),
+        ),
+      ),
+  }),
+  representation: t.router({
+    register: publicProcedure
+      .input(registerRepresentativeInputSchema)
+      .mutation(({ input }) =>
+        execute(() =>
+          registerRepresentative(
+            input.state,
+            {
+              kind: input.kind,
+              name: input.name,
+              contact: input.contact,
+              credentialRef: input.credentialRef,
+              scopeSystemIds: input.scopeSystemIds,
+              scopeRequestTypes: input.scopeRequestTypes,
+              validDays: input.validDays,
+            },
+            input.operator,
+          ),
+        ),
+      ),
+    verify: publicProcedure
+      .input(verifyRepresentativeInputSchema)
+      .mutation(({ input }) =>
+        execute(() =>
+          verifyRepresentative(
+            input.state,
+            input.representativeId,
+            input.status,
+            input.note,
+            input.operator,
+          ),
+        ),
+      ),
+    change: publicProcedure
+      .input(changeRepresentationInputSchema)
+      .mutation(({ input }) =>
+        execute(() =>
+          changeRepresentation(
+            input.state,
+            input.representativeId,
+            input.action,
+            input.reason,
+            input.successor,
+            input.baseRevision,
+            input.operator,
+          ),
+        ),
+      ),
+    backfill: publicProcedure
+      .input(backfillIntakeInputSchema)
+      .mutation(({ input }) =>
+        execute(() =>
+          backfillIntake(input.state, input.requestId, input.representativeId, input.operator),
+        ),
+      ),
+  }),
+  fulfillment: t.router({
+    evidenceBatch: publicProcedure
+      .input(evidenceBatchInputSchema)
+      .mutation(({ input }) =>
+        execute(() =>
+          produceEvidenceBatch(
+            input.state,
+            input.requestId,
+            input.items,
+            input.operator,
+            input.failAfterItem,
+            input.baseRevision,
+          ),
+        ),
+      ),
+    resumeBatch: publicProcedure
+      .input(resumeBatchInputSchema)
+      .mutation(({ input }) =>
+        execute(() =>
+          resumeEvidenceBatch(input.state, input.batchId, input.operator, input.failAfterItem),
+        ),
+      ),
+    preparePackage: publicProcedure
+      .input(preparePackageInputSchema)
+      .mutation(({ input }) =>
+        execute(() => preparePackage(input.state, input.requestId, input.operator)),
+      ),
+    deliverPackage: publicProcedure
+      .input(deliverPackageInputSchema)
+      .mutation(({ input }) =>
+        execute(() => deliverPackage(input.state, input.packageId, input.operator)),
+      ),
+    reviewPackage: publicProcedure
+      .input(reviewPackageInputSchema)
+      .mutation(({ input }) =>
+        execute(() =>
+          reviewPackage(input.state, input.packageId, input.reviewNote, input.operator),
         ),
       ),
   }),
