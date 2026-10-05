@@ -1,6 +1,11 @@
 export type {
+  AgencyChain,
+  AgencyChangeReason,
+  AgencyHistoryEntry,
+  AgencyRelationStatus,
   DataSystem,
   AuditEntry,
+  DeliveryPackage,
   ExecutionEvidence,
   IdentityCheck,
   PrivacyRequest,
@@ -8,6 +13,8 @@ export type {
   RequestStatus,
   RequestType,
   ReviewComment,
+  ScopeSnapshot,
+  TaskBatch,
   WorkflowStep,
   WorkspaceState,
 } from '@/lib/schemas'

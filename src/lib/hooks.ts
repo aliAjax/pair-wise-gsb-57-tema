@@ -33,20 +33,29 @@ export function useWorkspaceQuery() {
   return query
 }
 
-function useWorkspaceMutation<TInput>(
-  perform: (input: TInput, state: WorkspaceState) => Promise<WorkspaceState>,
-): UseMutationResult<WorkspaceState, Error, TInput> {
+interface WorkspaceMutationOptions {
+  onStale?: () => void
+}
+
+function useWorkspaceMutation<TInput extends { expectedRevision?: number }>(
+  perform: (input: TInput, state: WorkspaceState) => Promise<unknown>,
+  options: WorkspaceMutationOptions = {},
+): UseMutationResult<unknown, Error, TInput> {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (input: TInput) => {
       const state =
         queryClient.getQueryData<WorkspaceState>(workspaceQueryKey) ?? loadWorkspace()
       if (!state) throw new Error('本地工作区尚未加载')
-      return perform(input, state)
+      return perform({ ...input, expectedRevision: state.revision }, state)
     },
-    onSuccess: (state) => {
-      saveWorkspace(state)
-      queryClient.setQueryData(workspaceQueryKey, state)
+    onSuccess: (result) => {
+      const next = result as WorkspaceState
+      saveWorkspace(next)
+      queryClient.setQueryData(workspaceQueryKey, next)
+    },
+    onError: (error) => {
+      if (error.message.includes('工作区版本已变化')) options.onStale?.()
     },
   })
 }
@@ -129,10 +138,87 @@ export function useAddCommentMutation() {
 }
 
 export function useRecordExportMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (
+      input: Omit<Parameters<typeof trpc.request.recordExport.mutate>[0], 'state'>,
+    ) => {
+      const state =
+        queryClient.getQueryData<WorkspaceState>(workspaceQueryKey) ?? loadWorkspace()
+      if (!state) throw new Error('本地工作区尚未加载')
+      return trpc.request.recordExport.mutate({ ...input, state })
+    },
+    onSuccess: (next) => {
+      saveWorkspace(next)
+      queryClient.setQueryData(workspaceQueryKey, next)
+    },
+  })
+}
+
+export function useAgencyChangeMutation() {
   return useWorkspaceMutation(
-    (input: Omit<Parameters<typeof trpc.request.recordExport.mutate>[0], 'state'>, state) =>
-      trpc.request.recordExport.mutate({ ...input, state }),
+    (input: Omit<Parameters<typeof trpc.agency.change.mutate>[0], 'state'>, state) =>
+      trpc.agency.change.mutate({ ...input, state }),
   )
+}
+
+export function useAgencyBackfillMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.agency.backfill.mutate>[0], 'state'>, state) =>
+      trpc.agency.backfill.mutate({ ...input, state }),
+  )
+}
+
+export function useReviewPackageMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (
+      input: Omit<Parameters<typeof trpc.agency.reviewPackage.mutate>[0], 'state'>,
+    ) => {
+      const state =
+        queryClient.getQueryData<WorkspaceState>(workspaceQueryKey) ?? loadWorkspace()
+      if (!state) throw new Error('本地工作区尚未加载')
+      return trpc.agency.reviewPackage.mutate({ ...input, state })
+    },
+    onSuccess: (next) => {
+      saveWorkspace(next)
+      queryClient.setQueryData(workspaceQueryKey, next)
+    },
+  })
+}
+
+export function useBatchRunMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.batch.run.mutate>[0], 'state'>, state) =>
+      trpc.batch.run.mutate({ ...input, state }),
+  )
+}
+
+export interface ConcurrentSettleOutcome {
+  state: WorkspaceState
+  actions: { kind: 'agency-change' | 'task-complete'; accepted: boolean; detail: string }[]
+}
+
+export function useConcurrentSettleMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (
+      input: Omit<Parameters<typeof trpc.concurrency.settle.mutate>[0], 'state'>,
+    ): Promise<ConcurrentSettleOutcome> => {
+      const state =
+        queryClient.getQueryData<WorkspaceState>(workspaceQueryKey) ?? loadWorkspace()
+      if (!state) throw new Error('本地工作区尚未加载')
+      return trpc.concurrency.settle.mutate({
+        ...input,
+        expectedRevision: state.revision,
+        state,
+      }) as Promise<ConcurrentSettleOutcome>
+    },
+    onSuccess: (result) => {
+      saveWorkspace(result.state)
+      queryClient.setQueryData(workspaceQueryKey, result.state)
+    },
+  })
 }
 
 export type { PrivacyRequest }

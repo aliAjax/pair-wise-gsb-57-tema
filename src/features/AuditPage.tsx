@@ -64,6 +64,10 @@ export function AuditPage() {
 
   if (isLoading || !data) return <Box className="panel">正在加载审计工作区...</Box>
   const workspace = data
+  const blockedRequests = workspace.requests.filter(
+    (request) => !request.agency || request.agency.status === 'pending-confirmation',
+  )
+  const blockedCount = blockedRequests.length
 
   function sanitizedPackage() {
     return {
@@ -93,6 +97,27 @@ export function AuditPage() {
           protectedDigest: request.identity.protectedDigest,
           note: request.identity.note,
         },
+        agency: request.agency
+          ? {
+              kind: request.agency.kind,
+              status: request.agency.status,
+              subjectName: request.agency.subjectName,
+              agentName: request.agency.agentName,
+              agentContact: request.agency.agentContact,
+              basisVersion: request.agency.currentBasisVersion,
+              scopeFrozenAt: request.agency.scope.frozenAt,
+              scopeSystems: request.agency.scope.systemIds,
+            }
+          : { status: 'missing-legacy-backfill-required' },
+        packages: request.packages.map((pkg) => ({
+          digest: pkg.digest,
+          basisVersion: pkg.basisVersion,
+          status: pkg.status,
+          deliveredTo: pkg.deliveredTo,
+          deliveredAt: pkg.deliveredAt,
+          reviewReason: pkg.reviewReason,
+          reviewNote: pkg.reviewNote,
+        })),
         affectedSystems: workspace.systems
           .filter((system) => request.affectedSystemIds.includes(system.id))
           .map((system) => system.name),
@@ -118,12 +143,35 @@ export function AuditPage() {
   }
 
   async function exportPackage() {
+    const blocked = workspace.requests.filter(
+      (request) => !request.agency || request.agency.status === 'pending-confirmation',
+    )
+    if (blocked.length) {
+      toast({
+        title: '导出被代理关系门禁阻断',
+        description: `${blocked.map((request) => request.code).join('、')} 缺少已确认代理关系，回填补全前不能导出。`,
+        status: 'error',
+        duration: 8000,
+      })
+      return
+    }
     const pkg = sanitizedPackage()
-    await recordExport.mutateAsync({
-      scope: '全量请求处理包',
-      count: workspace.requests.length,
-      operator: '隐私负责人',
-    })
+    try {
+      await recordExport.mutateAsync({
+        scope: '全量请求处理包',
+        count: workspace.requests.length,
+        operator: '隐私负责人',
+        requestIds: workspace.requests.map((request) => request.id),
+      })
+    } catch (error) {
+      toast({
+        title: '导出被拒绝',
+        description: error instanceof Error ? error.message : '请先补全代理关系',
+        status: 'error',
+        duration: 8000,
+      })
+      return
+    }
     downloadFile(
       `隐私请求处理包-${new Date().toISOString().slice(0, 10)}.json`,
       JSON.stringify(pkg, null, 2),
@@ -231,6 +279,27 @@ export function AuditPage() {
             </Tbody>
           </Table>
         </TableContainer>
+      </Box>
+
+      <Box className="panel">
+        <Flex className="panel-title">
+          <Heading size="sm">代理关系导出门禁</Heading>
+          <Badge colorScheme={blockedCount ? 'red' : 'green'}>
+            {blockedCount ? `${blockedCount} 条阻断` : '全部已确认'}
+          </Badge>
+        </Flex>
+        <Text color="gray.600" fontSize="sm">
+          旧数据缺少代理关系时先回填为待确认，补全授权前不能导出处理包；已发出包的复核结论也随审计导出。
+        </Text>
+        {blockedRequests.length ? (
+          <HStack mt="2" wrap="wrap">
+            {blockedRequests.map((request) => (
+              <Badge key={request.id} colorScheme="red">
+                {request.code} {!request.agency ? '（缺代理关系）' : '（待确认）'}
+              </Badge>
+            ))}
+          </HStack>
+        ) : null}
       </Box>
 
       <Box className="panel">

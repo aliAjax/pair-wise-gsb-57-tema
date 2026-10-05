@@ -39,8 +39,10 @@ import {
   useToast,
 } from '@chakra-ui/react'
 import { ArrowLeft, FileCheck2, Link2Off, ShieldAlert } from 'lucide-react'
+import { AgencyPanel } from '@/components/AgencyPanel'
 import { PageHeader } from '@/components/PageHeader'
 import { StatusBadge, TypeBadge } from '@/components/StatusBadge'
+import { agencyBlockReason } from '@/services/agencyChain'
 import {
   useAddCommentMutation,
   useAddConflictMutation,
@@ -372,6 +374,15 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
           系统检测到与 {request.duplicateOf} 疑似重复，已保留原请求证据并要求人工复核。
         </Alert>
       ) : null}
+      {agencyBlockReason(request) ? (
+        <Alert status="error" mb="4" borderRadius="5px">
+          {agencyBlockReason(request)}
+        </Alert>
+      ) : null}
+
+      <Box mb="4">
+        <AgencyPanel request={request} />
+      </Box>
 
       <div className="two-column">
         <Box className="panel">
@@ -543,6 +554,11 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
                     <HStack>
                       <Badge>{task.order}</Badge>
                       <Text fontWeight="600">{task.name}</Text>
+                      {task.basisVersion ? (
+                        <Badge colorScheme={task.basisVersion === request.agency?.currentBasisVersion ? 'teal' : 'red'}>
+                          v{task.basisVersion}
+                        </Badge>
+                      ) : null}
                     </HStack>
                     <Text mt="1" color="gray.600" fontSize="sm">
                       {task.role} · {task.assignee}
@@ -622,11 +638,37 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
           </Heading>
           <VStack align="stretch" spacing="2">
             {request.evidence.map((evidence) => (
-              <Box key={evidence.id} className="timeline-item">
-                <Text fontWeight="600">{evidence.name}</Text>
+              <Box
+                key={evidence.id}
+                className="timeline-item"
+                opacity={evidence.validity === 'invalidated' ? 0.55 : 1}
+              >
+                <HStack justify="space-between">
+                  <Text fontWeight="600">{evidence.name}</Text>
+                  <Badge
+                    colorScheme={
+                      evidence.validity === 'invalidated'
+                        ? 'red'
+                        : evidence.validity === 'retained'
+                          ? 'purple'
+                          : 'teal'
+                    }
+                  >
+                    {evidence.validity === 'invalidated'
+                      ? `已失效 · v${evidence.basisVersion}`
+                      : evidence.validity === 'retained'
+                        ? `已留存 · v${evidence.basisVersion}`
+                        : `依据 v${evidence.basisVersion}`}
+                  </Badge>
+                </HStack>
                 <Text mt="1" color="gray.600" fontSize="xs">
                   {evidence.evidenceType} · {evidence.digest}
                 </Text>
+                {evidence.invalidReason ? (
+                  <Text mt="1" color="red.600" fontSize="xs">
+                    {evidence.invalidReason}
+                  </Text>
+                ) : null}
                 <Text mt="1" color="gray.500" fontSize="xs">
                   {evidence.uploadedBy} · {new Date(evidence.uploadedAt).toLocaleString('zh-CN')}
                 </Text>

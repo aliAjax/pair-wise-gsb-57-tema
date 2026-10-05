@@ -66,7 +66,11 @@ export function ReviewPage() {
       data?.requests.filter(
         (request) =>
           request.status === 'review-required' ||
+          request.status === 'rebuilding' ||
           request.identity.status === 'insufficient' ||
+          !request.agency ||
+          request.agency.status !== 'confirmed' ||
+          request.packages.some((pkg) => pkg.status === 'under-review') ||
           request.duplicateOf ||
           request.conflicts.length > 0 ||
           new Date(request.dueAt).getTime() < Date.now(),
@@ -208,6 +212,18 @@ export function ReviewPage() {
                     </Td>
                     <Td maxW="360px">
                       <VStack align="stretch" spacing="1">
+                        {!request.agency ? (
+                          <Badge colorScheme="red">旧数据缺少代理关系，需回填（导出已阻断）</Badge>
+                        ) : request.agency.status === 'pending-confirmation' ? (
+                          <Badge colorScheme="orange">代理关系待确认，补全前不能产出/导出</Badge>
+                        ) : request.agency.status !== 'confirmed' ? (
+                          <Badge colorScheme="purple">
+                            代理{request.agency.status} · 依据 v{request.agency.currentBasisVersion}，未交付材料重算中
+                          </Badge>
+                        ) : null}
+                        {request.packages.some((pkg) => pkg.status === 'under-review') ? (
+                          <Badge colorScheme="red">已发出处理包复核中（保留出具时依据）</Badge>
+                        ) : null}
                         {request.duplicateOf ? (
                           <Badge colorScheme="orange">疑似重复 {request.duplicateOf}</Badge>
                         ) : null}

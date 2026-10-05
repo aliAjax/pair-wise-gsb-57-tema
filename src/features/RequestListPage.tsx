@@ -40,12 +40,14 @@ import { StatusBadge, TypeBadge } from '@/components/StatusBadge'
 import { useCreateRequestMutation, useWorkspaceQuery } from '@/lib/hooks'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import {
+  agencyStatusLabels,
   regionLabels,
   requestStatusLabels,
   requestTypeLabels,
   type Region,
   type RequestStatus,
   type RequestType,
+  type WorkspaceState,
 } from '@/lib/schemas'
 import { deadlineState, templateName } from '@/services/workflow'
 
@@ -62,6 +64,12 @@ const initialForm = {
     | 'none',
   identityReference: '',
   note: '',
+  representation: 'self' as 'self' | 'agent',
+  agentName: '',
+  agentContact: '',
+  scopeSystemIds: [] as string[],
+  authorizationExpiresAt: '',
+  authorizationNote: '',
 }
 
 export function RequestListPage() {
@@ -96,10 +104,10 @@ export function RequestListPage() {
       toast({ title: '请至少选择一个相关系统', status: 'warning' })
       return
     }
-    const next = await createRequest.mutateAsync({
+    const next = (await createRequest.mutateAsync({
       input: form,
       operator: '客服专员',
-    })
+    })) as WorkspaceState
     const created = next.requests.find(
       (request) =>
         request.requesterName === form.requesterName &&
@@ -208,6 +216,16 @@ export function RequestListPage() {
                     <Td>
                       <HStack wrap="wrap" spacing="1">
                         {request.duplicateOf ? <Badge colorScheme="orange">重复</Badge> : null}
+                        {!request.agency ? (
+                          <Badge colorScheme="red">代理待回填</Badge>
+                        ) : request.agency.status !== 'confirmed' ? (
+                          <Badge colorScheme="purple">
+                            代理{agencyStatusLabels[request.agency.status]} · v{request.agency.currentBasisVersion}
+                          </Badge>
+                        ) : null}
+                        {request.packages.some((pkg) => pkg.status === 'under-review') ? (
+                          <Badge colorScheme="red">处理包复核中</Badge>
+                        ) : null}
                         {request.identity.status === 'insufficient' ? (
                           <Badge colorScheme="red">身份不足</Badge>
                         ) : null}
@@ -348,6 +366,81 @@ export function RequestListPage() {
                 placeholder="记录客户说明、材料范围和需要关注的处理要求"
               />
             </FormControl>
+
+            <Flex gap="4" mt="4">
+              <FormControl isRequired>
+                <FormLabel>办理方式（受理即冻结）</FormLabel>
+                <Select
+                  value={form.representation}
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      representation: event.target.value as 'self' | 'agent',
+                      identityMaterialType:
+                        event.target.value === 'agent' ? 'authorization-letter' : form.identityMaterialType,
+                    })
+                  }
+                >
+                  <option value="self">数据主体本人办理</option>
+                  <option value="agent">代理律师/代理人代为办理</option>
+                </Select>
+              </FormControl>
+              {form.representation === 'agent' ? (
+                <FormControl>
+                  <FormLabel>授权到期时间（可选）</FormLabel>
+                  <Input
+                    type="date"
+                    value={form.authorizationExpiresAt}
+                    onChange={(event) =>
+                      setForm({ ...form, authorizationExpiresAt: event.target.value })
+                    }
+                  />
+                </FormControl>
+              ) : null}
+            </Flex>
+            {form.representation === 'agent' ? (
+              <Flex gap="4" mt="4">
+                <FormControl isRequired>
+                  <FormLabel>代理人姓名</FormLabel>
+                  <Input
+                    value={form.agentName}
+                    onChange={(event) => setForm({ ...form, agentName: event.target.value })}
+                    placeholder="例如 周岚代理律师"
+                  />
+                </FormControl>
+                <FormControl isRequired>
+                  <FormLabel>代理人掩码联系方式</FormLabel>
+                  <Input
+                    value={form.agentContact}
+                    onChange={(event) => setForm({ ...form, agentContact: event.target.value })}
+                    placeholder="zhou***@law.example.com"
+                  />
+                </FormControl>
+              </Flex>
+            ) : null}
+            {form.representation === 'agent' ? (
+              <FormControl mt="4">
+                <FormLabel>授权查看范围（留空则等同全部勾选系统，受理时冻结快照）</FormLabel>
+                <HStack wrap="wrap">
+                  {data.systems.map((system) => (
+                    <Checkbox
+                      key={system.id}
+                      isChecked={form.scopeSystemIds.includes(system.id)}
+                      onChange={(event) =>
+                        setForm({
+                          ...form,
+                          scopeSystemIds: event.target.checked
+                            ? [...form.scopeSystemIds, system.id]
+                            : form.scopeSystemIds.filter((id) => id !== system.id),
+                        })
+                      }
+                    >
+                      {system.name}
+                    </Checkbox>
+                  ))}
+                </HStack>
+              </FormControl>
+            ) : null}
 
             <Alert status="success" mt="4" borderRadius="5px">
               将生成：{templateName(form.region, form.type)}

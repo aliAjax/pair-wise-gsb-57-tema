@@ -1,5 +1,12 @@
-import type { DataSystem, PrivacyRequest, WorkspaceState } from '@/types/domain'
+import type {
+  AgencyChain,
+  DataSystem,
+  DeliveryPackage,
+  PrivacyRequest,
+  WorkspaceState,
+} from '@/types/domain'
 import { addDays, buildWorkflowSteps } from './workflow'
+import { materialDigest, packageDigest } from './agencyChain'
 
 const systems: DataSystem[] = [
   {
@@ -74,6 +81,88 @@ function audit(
   return { id, action, operator, detail, createdAt }
 }
 
+function agency(params: {
+  kind: 'self' | 'agent'
+  status: AgencyChain['status']
+  subjectName: string
+  agentName?: string
+  agentContact?: string
+  materialReference: string
+  systemIds: string[]
+  requestType: PrivacyRequest['type']
+  frozenAt: string
+  version?: number
+  validUntil?: string
+  note?: string
+  legacyBackfill?: boolean
+}): AgencyChain {
+  const version = params.version ?? 1
+  return {
+    kind: params.kind,
+    status: params.status,
+    subjectName: params.subjectName,
+    agentName: params.agentName ?? params.subjectName,
+    agentContact: params.agentContact ?? '',
+    materialType: params.kind === 'agent' ? 'authorization-letter' : 'masked-id',
+    maskedReference: params.materialReference,
+    protectedDigest: materialDigest(params.materialReference),
+    currentBasisVersion: version,
+    scope: {
+      basisVersion: version,
+      systemIds: params.systemIds,
+      requestTypes: [params.requestType],
+      frozenAt: params.frozenAt,
+      note: params.note ?? '受理时冻结代理关系与查看范围。',
+    },
+    history: [
+      {
+        basisVersion: version,
+        reason: 'initial',
+        status: params.status,
+        agentName: params.agentName ?? params.subjectName,
+        agentContact: params.agentContact ?? '',
+        scope: {
+          basisVersion: version,
+          systemIds: params.systemIds,
+          requestTypes: [params.requestType],
+          frozenAt: params.frozenAt,
+          note: params.note ?? '受理时冻结代理关系与查看范围。',
+        },
+        validFrom: params.frozenAt,
+        validUntil: params.validUntil,
+        changedAt: params.frozenAt,
+        operator: '客服专员',
+        note: params.note ?? '受理时冻结代理关系与查看范围。',
+      },
+    ],
+    legacyBackfill: params.legacyBackfill ?? false,
+  }
+}
+
+function deliveredPackage(params: {
+  requestCode: string
+  basisVersion: number
+  status: DeliveryPackage['status']
+  evidenceIds: string[]
+  scopeSystemIds: string[]
+  deliveredAt: string
+  deliveredTo: string
+  reviewReason?: string
+}): DeliveryPackage {
+  return {
+    id: `pkg-${params.requestCode}`,
+    requestCode: params.requestCode,
+    basisVersion: params.basisVersion,
+    status: params.status,
+    reviewReason: params.reviewReason,
+    evidenceIds: params.evidenceIds,
+    scopeSystemIds: params.scopeSystemIds,
+    digest: packageDigest([params.requestCode, String(params.basisVersion), ...params.evidenceIds]),
+    deliveredAt: params.deliveredAt,
+    deliveredTo: params.deliveredTo,
+  }
+}
+
 export function createInitialState(): WorkspaceState {
   const request1At = '2026-09-25T02:30:00.000Z'
   const request2At = '2026-09-18T06:20:00.000Z'
@@ -107,6 +196,15 @@ export function createInitialState(): WorkspaceState {
       dueAt: request1Due,
       extendedDays: 0,
       affectedSystemIds: ['sys-crm', 'sys-order', 'sys-support'],
+      agency: agency({
+        kind: 'self',
+        status: 'confirmed',
+        subjectName: '张晨',
+        materialReference: '310***********1234',
+        systemIds: ['sys-crm', 'sys-order', 'sys-support'],
+        requestType: 'access',
+        frozenAt: request1At,
+      }),
       tasks: buildWorkflowSteps({
         requestId: 'req-001',
         type: 'access',
@@ -126,8 +224,12 @@ export function createInitialState(): WorkspaceState {
           uploadedBy: '当前客服',
           uploadedAt: '2026-09-25T04:10:00.000Z',
           protected: true,
+          basisVersion: 1,
+          validity: 'current',
         },
       ],
+      packages: [],
+      taskBatches: [],
       conflicts: [],
       resultSummary: '',
       closureReason: '',
@@ -161,6 +263,18 @@ export function createInitialState(): WorkspaceState {
       extendedDays: 0,
       duplicateOf: 'req-005',
       affectedSystemIds: ['sys-crm', 'sys-marketing', 'sys-support'],
+      agency: agency({
+        kind: 'agent',
+        status: 'pending-confirmation',
+        subjectName: '王宁',
+        agentName: '未知代理人',
+        agentContact: '',
+        materialReference: '授权书仅含截图',
+        systemIds: ['sys-crm', 'sys-marketing', 'sys-support'],
+        requestType: 'deletion',
+        frozenAt: request2At,
+        note: '授权书无法证明委托关系，受理快照待确认。',
+      }),
       tasks: buildWorkflowSteps({
         requestId: 'req-002',
         type: 'deletion',
@@ -171,6 +285,8 @@ export function createInitialState(): WorkspaceState {
         systems,
       }),
       evidence: [],
+      packages: [],
+      taskBatches: [],
       conflicts: [
         '身份材料不足：授权书无法证明申请人与数据主体关系。',
         '疑似重复请求：与 DSR-2026-005 的请求人和处理类型相同。',
@@ -217,6 +333,8 @@ export function createInitialState(): WorkspaceState {
         systems,
       }).map((step, index) => (index === 1 ? { ...step, status: 'blocked', exceptionReason: '风控平台返回值与客服系统不一致。' } : step)),
       evidence: [],
+      packages: [],
+      taskBatches: [],
       conflicts: ['跨系统结果冲突：客户系统中的姓名已更正，但风控平台仍保留旧值。'],
       resultSummary: '',
       closureReason: '',
@@ -250,6 +368,16 @@ export function createInitialState(): WorkspaceState {
       dueAt: request4Due,
       extendedDays: 0,
       affectedSystemIds: ['sys-marketing'],
+      agency: agency({
+        kind: 'agent',
+        status: 'confirmed',
+        subjectName: '陈妙',
+        agentName: '陈妙（本人）',
+        materialReference: '账号所有权验证通过',
+        systemIds: ['sys-marketing'],
+        requestType: 'withdraw-consent',
+        frozenAt: request4At,
+      }),
       tasks: buildWorkflowSteps({
         requestId: 'req-004',
         type: 'withdraw-consent',
@@ -269,8 +397,12 @@ export function createInitialState(): WorkspaceState {
           uploadedBy: '增长技术组',
           uploadedAt: '2026-09-28T09:00:00.000Z',
           protected: true,
+          basisVersion: 1,
+          validity: 'current',
         },
       ],
+      packages: [],
+      taskBatches: [],
       conflicts: [],
       resultSummary: '营销平台已撤回同意并停止后续自动化触达。',
       closureReason: '',
@@ -304,6 +436,45 @@ export function createInitialState(): WorkspaceState {
       dueAt: request5Due,
       extendedDays: 0,
       affectedSystemIds: ['sys-crm', 'sys-marketing'],
+      agency: (() => {
+        const chain = agency({
+          kind: 'agent',
+          status: 'replaced',
+          subjectName: '王宁',
+          agentName: '吴慎代理律师',
+          agentContact: 'wu***@law.example.com',
+          materialReference: 'AUTH-EU-7781',
+          systemIds: ['sys-crm', 'sys-marketing'],
+          requestType: 'deletion',
+          frozenAt: request5At,
+          version: 2,
+          note: '受理时由周岚代理律师提交，2026-09-28 被代理人书面换人，冻结新快照 v2。',
+        })
+        chain.history[0].reason = 'replacement'
+        chain.history[0].changedAt = '2026-09-28T01:00:00.000Z'
+        chain.history[0].validFrom = '2026-09-28T01:00:00.000Z'
+        chain.history[0].operator = '隐私运营'
+        chain.history.push({
+          basisVersion: 1,
+          reason: 'initial',
+          status: 'replaced',
+          agentName: '周岚代理律师',
+          agentContact: 'zhou***@law.example.com',
+          scope: {
+            basisVersion: 1,
+            systemIds: ['sys-crm', 'sys-marketing'],
+            requestTypes: ['deletion'],
+            frozenAt: request5At,
+            note: '受理时冻结的初始代理关系与查看范围。',
+          },
+          validFrom: request5At,
+          validUntil: '2026-09-28T01:00:00.000Z',
+          changedAt: request5At,
+          operator: '客服专员',
+          note: '初始授权，处理包已按此依据交付。',
+        })
+        return chain
+      })(),
       tasks: buildWorkflowSteps({
         requestId: 'req-005',
         type: 'deletion',
@@ -323,9 +494,26 @@ export function createInitialState(): WorkspaceState {
           uploadedBy: '客户平台组',
           uploadedAt: '2026-09-08T05:00:00.000Z',
           protected: true,
+          basisVersion: 1,
+          validity: 'retained',
         },
       ],
-      conflicts: [],
+      packages: [
+        deliveredPackage({
+          requestCode: 'DSR-2026-005',
+          basisVersion: 1,
+          status: 'under-review',
+          evidenceIds: ['evidence-005-a'],
+          scopeSystemIds: ['sys-crm', 'sys-marketing'],
+          deliveredAt: '2026-09-10T02:00:00.000Z',
+          deliveredTo: '周岚代理律师',
+          reviewReason: '授权依据 v1 发生变更（replacement），保留原包并转入复核',
+        }),
+      ],
+      taskBatches: [],
+      conflicts: [
+        '代理授权变更：更换代理人，依据 v1 → v2。已发出处理包 pkg-DSR-2026-005 保留原依据并进入复核。',
+      ],
       resultSummary: '已完成请求主体在两个系统中的删除，并保留最小合规凭证。',
       closureReason: '期限已到且任务完整，经复核后关闭。',
       audit: [
@@ -339,6 +527,23 @@ export function createInitialState(): WorkspaceState {
       ],
     },
   ]
+
+  // 旧数据兼容：补齐批次/处理包字段；无代理关系的请求保持 undefined，
+  // 由界面与导出门禁识别为“待回填”，回填前不能导出。
+  for (const request of requests) {
+    request.packages ??= []
+    request.taskBatches ??= []
+    for (const task of request.tasks) {
+      if (task.status === 'completed' && task.basisVersion === undefined) {
+        task.basisVersion = request.agency?.currentBasisVersion ?? 1
+      }
+    }
+    for (const evidence of request.evidence) {
+      evidence.basisVersion ??= 1
+      evidence.validity ??= evidence.id === 'evidence-005-a' ? 'retained' : 'current'
+      evidence.systemId ??= request.tasks.find((task) => task.id === evidence.stepId)?.systemId
+    }
+  }
 
   return {
     requests,
